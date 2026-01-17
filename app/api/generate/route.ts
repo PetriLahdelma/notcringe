@@ -1,6 +1,9 @@
+import { createHash } from "crypto"
 import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { z } from "zod"
+
+import { prisma } from "@/lib/prisma"
 
 export const runtime = "nodejs"
 
@@ -12,6 +15,7 @@ const RequestSchema = z.object({
   cta: z.enum(["none", "question", "invite", "resource"]).optional(),
   persona: z.enum(["builder", "designer", "pm", "founder", "recruiter"]).optional(),
   noCringe: z.boolean().optional(),
+  anonId: z.string().min(1).optional(),
 })
 
 const ReplySchema = z.object({
@@ -28,6 +32,7 @@ const ResponseSchema = z.object({
 
 type RequestPayload = z.infer<typeof RequestSchema>
 type Reply = z.infer<typeof ReplySchema>
+type ReplyWithAnchor = Reply & { anchor?: string }
 type ReplyCategory = "SAFE" | "INTERESTING" | "BOLD"
 type PromptSettings = {
   postText: string
@@ -48,6 +53,104 @@ const defaults: Defaults = {
   cta: "none",
   persona: "builder",
   noCringe: true,
+}
+
+const CACHE_TTL_MS = 1000 * 60 * 10
+const responseCache = new Map<
+  string,
+  { expiresAt: number; value: { anchors: string[]; replies: ReplyWithAnchor[]; model: string } }
+>()
+
+function getCachedResponse(cacheKey: string) {
+  const entry = responseCache.get(cacheKey)
+  if (!entry) return null
+  if (entry.expiresAt < Date.now()) {
+    responseCache.delete(cacheKey)
+    return null
+  }
+  return entry.value
+}
+
+function setCachedResponse(
+  cacheKey: string,
+  value: { anchors: string[]; replies: ReplyWithAnchor[]; model: string }
+) {
+  responseCache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, value })
+}
+
+function createCacheKey(settings: PromptSettings) {
+  const payload = {
+    postText: settings.postText,
+    vibe: settings.vibe,
+    risk: settings.risk,
+    length: settings.length,
+    cta: settings.cta,
+    persona: settings.persona,
+    noCringe: settings.noCringe,
+  }
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex")
+}
+
+function extractAnchors(postText: string) {
+  const lines = postText
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const candidates = lines.length ? lines : postText.split(/(?<=[.!?])\s+/)
+  const anchors: string[] = []
+
+  for (const candidate of candidates) {
+    const cleaned = candidate.replace(/\s+/g, " ").trim()
+    if (!cleaned) continue
+    const words = cleaned.split(" ")
+    const anchor = words.length > 10 ? words.slice(0, 10).join(" ") : cleaned
+    const trimmed = anchor.replace(/[.,!?;:]+$/, "").trim()
+    if (trimmed.length < 4) continue
+    if (!anchors.includes(trimmed)) {
+      anchors.push(trimmed)
+    }
+    if (anchors.length >= 3) break
+  }
+
+  if (!anchors.length) {
+    const words = postText.replace(/\s+/g, " ").trim().split(" ").filter(Boolean)
+    if (words.length) {
+      anchors.push(words.slice(0, Math.min(words.length, 8)).join(" "))
+    }
+  }
+
+  return anchors
+}
+
+function normalizeForMatch(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+}
+
+function findAnchorMatch(text: string, anchors: string[]) {
+  const normalizedText = normalizeForMatch(text)
+  for (const anchor of anchors) {
+    const normalizedAnchor = normalizeForMatch(anchor)
+    if (normalizedAnchor && normalizedText.includes(normalizedAnchor)) {
+      return anchor
+    }
+  }
+  return null
+}
+
+function enforceAnchors(replies: Reply[], anchors: string[]) {
+  return replies.map((reply, index) => {
+    const match = findAnchorMatch(reply.text, anchors)
+    if (match) {
+      return { ...reply, anchor: match }
+    }
+    const anchor = anchors[index % anchors.length]
+    const suffix = reply.text.endsWith(".") ? "" : "."
+    return {
+      ...reply,
+      text: `${reply.text}${suffix} That part about ${anchor} is the key.`,
+      anchor,
+    }
+  })
 }
 
 function deriveLengthLabel(text: string) {
@@ -73,7 +176,7 @@ function ensureTagCount(tags: string[] | undefined) {
   return tags.slice(0, 3)
 }
 
-function reorderReplies(replies: Reply[], fallback: ReplyCategory) {
+function reorderReplies(replies: ReplyWithAnchor[], fallback: ReplyCategory) {
   const normalized = replies.map((reply, index) => ({
     ...reply,
     category: normalizeCategory(reply.category, fallback),
@@ -116,7 +219,7 @@ function reorderReplies(replies: Reply[], fallback: ReplyCategory) {
   return combined.slice(0, 20)
 }
 
-function buildPrompt(settings: PromptSettings) {
+function buildPrompt(settings: PromptSettings, anchors: string[]) {
   const ctaHints: Record<CtaOption, string> = {
     none: "No CTA.",
     question: "End with a light question when possible.",
@@ -129,6 +232,7 @@ function buildPrompt(settings: PromptSettings) {
     "Output must be a JSON object only.",
     "Generate 10-20 reply options across SAFE, INTERESTING, and BOLD categories.",
     "Avoid empty praise. Reference a concrete detail when possible.",
+    "Every reply must reference at least one anchor phrase verbatim.",
     "Keep replies professional, warm, and concise.",
     settings.noCringe
       ? "No cringe mode: avoid exclamation spam, forced hype, and thought-leader cliches."
@@ -137,6 +241,8 @@ function buildPrompt(settings: PromptSettings) {
     ctaHints[settings.cta],
     "Return JSON in this shape: { \"replies\": [{ \"category\": \"SAFE|INTERESTING|BOLD\", \"text\": \"...\", \"tags\": [\"...\"], \"lengthLabel\": \"short|medium|long\", \"score\": 0.0 }] }",
     "Tags should be 2-3 short reasons like: specific, framework, hook, respectful, value-add.",
+    "Anchors (must be quoted verbatim in every reply):",
+    ...anchors.map((anchor) => `- ${anchor}`),
     "Post text:",
     settings.postText,
   ].join("\n")
@@ -171,48 +277,123 @@ export async function POST(request: Request) {
       noCringe: parsed.data.noCringe ?? defaults.noCringe,
     }
 
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
     const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini"
-    const prompt = buildPrompt(settings)
+    const cacheKey = createCacheKey(settings)
+    const cached = getCachedResponse(cacheKey)
 
-    const completion = await client.chat.completions.create({
-      model,
-      temperature: 0.7,
-      messages: [
-        { role: "system", content: "You are a precise JSON generator." },
-        { role: "user", content: prompt },
-      ],
-      response_format: { type: "json_object" },
-    })
+    let anchors = extractAnchors(settings.postText)
+    let replies: ReplyWithAnchor[] = []
+    let usedModel = model
 
-    const content = completion.choices[0]?.message?.content || ""
-    let payload: unknown
+    if (cached) {
+      anchors = cached.anchors
+      replies = cached.replies
+      usedModel = cached.model
+    } else {
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+      const prompt = buildPrompt(settings, anchors)
 
-    try {
-      payload = JSON.parse(content)
-    } catch {
-      const start = content.indexOf("{")
-      const end = content.lastIndexOf("}")
-      if (start !== -1 && end !== -1) {
-        payload = JSON.parse(content.slice(start, end + 1))
+      const completion = await client.chat.completions.create({
+        model,
+        temperature: 0.7,
+        messages: [
+          { role: "system", content: "You are a precise JSON generator." },
+          { role: "user", content: prompt },
+        ],
+        response_format: { type: "json_object" },
+      })
+
+      const content = completion.choices[0]?.message?.content || ""
+      let payload: unknown
+
+      try {
+        payload = JSON.parse(content)
+      } catch {
+        const start = content.indexOf("{")
+        const end = content.lastIndexOf("}")
+        if (start !== -1 && end !== -1) {
+          payload = JSON.parse(content.slice(start, end + 1))
+        }
+      }
+
+      const parsedResponse = ResponseSchema.safeParse(payload)
+      if (!parsedResponse.success) {
+        return NextResponse.json(
+          { error: "Model output could not be parsed." },
+          { status: 502 }
+        )
+      }
+
+      const fallbackCategory: ReplyCategory =
+        settings.risk === "bold"
+          ? "BOLD"
+          : settings.risk === "safe"
+            ? "SAFE"
+            : "INTERESTING"
+
+      const anchoredReplies = enforceAnchors(parsedResponse.data.replies, anchors)
+      replies = reorderReplies(anchoredReplies, fallbackCategory)
+      setCachedResponse(cacheKey, { anchors, replies, model })
+    }
+
+    let generationId: string | null = null
+    let responseReplies = replies
+
+    if (parsed.data.anonId && process.env.DATABASE_URL) {
+      try {
+        const visitor = await prisma.visitor.upsert({
+          where: { anonId: parsed.data.anonId },
+          update: { lastSeenAt: new Date() },
+          create: { anonId: parsed.data.anonId, lastSeenAt: new Date() },
+        })
+
+        const generation = await prisma.generation.create({
+          data: {
+            visitorId: visitor.id,
+            settings: {
+              vibe: settings.vibe,
+              risk: settings.risk,
+              length: settings.length,
+              cta: settings.cta,
+              persona: settings.persona,
+              noCringe: settings.noCringe,
+              anchors,
+            },
+            model: usedModel,
+            latencyMs: Date.now() - startedAt,
+            replyCount: replies.length,
+          },
+        })
+
+        const createdReplies = await prisma.$transaction(
+          replies.map((reply) =>
+            prisma.reply.create({
+              data: {
+                generationId: generation.id,
+                category: normalizeCategory(reply.category, "INTERESTING"),
+                text: reply.text,
+                tags: reply.tags ?? [],
+                score: reply.score ?? 0.5,
+                lengthLabel: reply.lengthLabel ?? deriveLengthLabel(reply.text),
+              },
+            })
+          )
+        )
+
+        generationId = generation.id
+        responseReplies = replies.map((reply, index) => ({
+          ...reply,
+          id: createdReplies[index]?.id,
+        }))
+      } catch {
+        generationId = null
       }
     }
 
-    const parsedResponse = ResponseSchema.safeParse(payload)
-    if (!parsedResponse.success) {
-      return NextResponse.json(
-        { error: "Model output could not be parsed." },
-        { status: 502 }
-      )
-    }
-
-    const fallbackCategory: ReplyCategory =
-      settings.risk === "bold" ? "BOLD" : settings.risk === "safe" ? "SAFE" : "INTERESTING"
-
-    const replies = reorderReplies(parsedResponse.data.replies, fallbackCategory)
-
     return NextResponse.json({
-      replies,
+      anchors,
+      generationId,
+      replies: responseReplies,
       latencyMs: Date.now() - startedAt,
     })
   } catch (error) {

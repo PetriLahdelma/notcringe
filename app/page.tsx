@@ -186,7 +186,7 @@ export default function Page() {
       </div>
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-20" id="demo">
-        <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="space-y-8">
           <div className="space-y-6">
             <div>
               <h2 className="text-3xl font-semibold">Try the demo</h2>

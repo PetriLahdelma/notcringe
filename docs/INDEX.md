@@ -16,6 +16,7 @@ Complete guide to notCringe documentation. Start here to find what you need.
 | Learn about security           | [SECURITY.md](../SECURITY.md)              |
 | See what's new                 | [CHANGELOG.md](../CHANGELOG.md)            |
 | Find answers                   | [FAQ.md](./FAQ.md)                         |
+| Plan the future platform       | [FUTURE-PLATFORM.md](./FUTURE-PLATFORM.md) |
 
 ---
 
@@ -352,6 +353,7 @@ notcringe/
     ├── DEPLOYMENT.md         ← Deploy guide
     ├── CONTRIBUTING.md       ← How to contribute
     ├── TROUBLESHOOTING.md    ← Fix issues
+    ├── FUTURE-PLATFORM.md    ← Strategy + market benchmark
     └── FAQ.md                ← Quick answers
 ```
 
@@ -406,6 +408,7 @@ notcringe/
 | CONTRIBUTING.md    | ✅ Complete | 2026-01-17   |
 | TROUBLESHOOTING.md | ✅ Complete | 2026-01-17   |
 | FAQ.md             | ✅ Complete | 2026-01-17   |
+| FUTURE-PLATFORM.md | ✅ Complete | 2026-01-17   |
 | SECURITY.md        | ✅ Complete | 2026-01-17   |
 | CHANGELOG.md       | ✅ Complete | 2026-01-17   |
 
