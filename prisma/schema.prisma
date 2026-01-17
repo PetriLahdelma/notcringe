@@ -70,6 +70,7 @@ model Generation {
 
   visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
   replies Reply[]
+  feedback FeedbackEvent[]
 
   @@index([visitorId, createdAt])
 }
@@ -85,6 +86,7 @@ model Reply {
   createdAt     DateTime       @default(now())
 
   generation Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  feedback FeedbackEvent[]
 
   @@index([generationId])
 }

@@ -26,16 +26,29 @@ const ResponseSchema = z.object({
   replies: z.array(ReplySchema).min(1),
 })
 
+type RequestPayload = z.infer<typeof RequestSchema>
+type Reply = z.infer<typeof ReplySchema>
 type ReplyCategory = "SAFE" | "INTERESTING" | "BOLD"
+type PromptSettings = {
+  postText: string
+  vibe: NonNullable<RequestPayload["vibe"]>
+  risk: NonNullable<RequestPayload["risk"]>
+  length: NonNullable<RequestPayload["length"]>
+  cta: NonNullable<RequestPayload["cta"]>
+  persona: NonNullable<RequestPayload["persona"]>
+  noCringe: NonNullable<RequestPayload["noCringe"]>
+}
+type Defaults = Omit<PromptSettings, "postText">
+type CtaOption = PromptSettings["cta"]
 
-const defaults = {
+const defaults: Defaults = {
   vibe: "diplomatic",
   risk: "medium",
   length: "two-three",
   cta: "none",
   persona: "builder",
   noCringe: true,
-} as const
+}
 
 function deriveLengthLabel(text: string) {
   const words = text.trim().split(/\s+/).filter(Boolean).length
@@ -60,7 +73,7 @@ function ensureTagCount(tags: string[] | undefined) {
   return tags.slice(0, 3)
 }
 
-function reorderReplies(replies: ReplySchema[], fallback: ReplyCategory) {
+function reorderReplies(replies: Reply[], fallback: ReplyCategory) {
   const normalized = replies.map((reply, index) => ({
     ...reply,
     category: normalizeCategory(reply.category, fallback),
@@ -103,8 +116,8 @@ function reorderReplies(replies: ReplySchema[], fallback: ReplyCategory) {
   return combined.slice(0, 20)
 }
 
-function buildPrompt(settings: typeof defaults & { postText: string }) {
-  const ctaHints: Record<typeof defaults.cta, string> = {
+function buildPrompt(settings: PromptSettings) {
+  const ctaHints: Record<CtaOption, string> = {
     none: "No CTA.",
     question: "End with a light question when possible.",
     invite: "Invite a response without sounding salesy.",
@@ -148,10 +161,14 @@ export async function POST(request: Request) {
       )
     }
 
-    const settings = {
-      ...defaults,
-      ...parsed.data,
+    const settings: PromptSettings = {
       postText: parsed.data.postText.trim(),
+      vibe: parsed.data.vibe ?? defaults.vibe,
+      risk: parsed.data.risk ?? defaults.risk,
+      length: parsed.data.length ?? defaults.length,
+      cta: parsed.data.cta ?? defaults.cta,
+      persona: parsed.data.persona ?? defaults.persona,
+      noCringe: parsed.data.noCringe ?? defaults.noCringe,
     }
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
