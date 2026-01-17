@@ -2,8 +2,8 @@ name: CI and Deploy
 
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   ci:
@@ -17,4 +17,5 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - run: npm run test
       - run: npm run build

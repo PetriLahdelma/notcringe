@@ -3,12 +3,16 @@ import { z } from "zod"
 
 import { prisma } from "@/lib/prisma"
 
-const RequestSchema = z.object({
-  anonId: z.string().min(1),
-  generationId: z.string().optional(),
-  replyId: z.string().optional(),
-  type: z.enum(["worked", "too_cringe", "too_long"]),
-})
+const RequestSchema = z
+  .object({
+    anonId: z.string().min(1),
+    generationId: z.string().optional(),
+    replyId: z.string().optional(),
+    type: z.enum(["worked", "too_cringe", "too_long"]),
+  })
+  .refine((data) => data.generationId || data.replyId, {
+    message: "generationId or replyId is required.",
+  })
 
 const typeMap = {
   worked: "WORKED",
@@ -33,6 +37,40 @@ export async function POST(request: Request) {
       update: { lastSeenAt: new Date() },
       create: { anonId: parsed.data.anonId, lastSeenAt: new Date() },
     })
+
+    if (parsed.data.generationId) {
+      const generation = await prisma.generation.findFirst({
+        where: { id: parsed.data.generationId, visitorId: visitor.id },
+        select: { id: true },
+      })
+      if (!generation) {
+        return NextResponse.json({ error: "Generation not found." }, { status: 404 })
+      }
+    }
+
+    if (parsed.data.replyId) {
+      const reply = await prisma.reply.findFirst({
+        where: {
+          id: parsed.data.replyId,
+          generation: { visitorId: visitor.id },
+        },
+        select: { id: true, generationId: true },
+      })
+
+      if (!reply) {
+        return NextResponse.json({ error: "Reply not found." }, { status: 404 })
+      }
+
+      if (
+        parsed.data.generationId &&
+        parsed.data.generationId !== reply.generationId
+      ) {
+        return NextResponse.json(
+          { error: "Reply does not belong to generation." },
+          { status: 400 }
+        )
+      }
+    }
 
     await prisma.feedbackEvent.create({
       data: {

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import OpenAI from "openai"
 import { z } from "zod"
 
+import { deriveLengthLabel, findAnchorMatch } from "@/lib/reply-utils"
 const RequestSchema = z.object({
   text: z.string().min(1).max(2000),
   action: z.enum(["shorten", "spice", "safer"]),
@@ -18,25 +19,8 @@ const ResponseSchema = z.object({
   text: z.string().min(1),
 })
 
-function deriveLengthLabel(text: string) {
-  const words = text.trim().split(/\s+/).filter(Boolean).length
-  if (words <= 12) return "short"
-  if (words <= 35) return "medium"
-  return "long"
-}
-
-function normalizeForMatch(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
-}
-
 function ensureAnchor(text: string, anchors: string[]) {
-  const normalizedText = normalizeForMatch(text)
-  for (const anchor of anchors) {
-    const normalizedAnchor = normalizeForMatch(anchor)
-    if (normalizedAnchor && normalizedText.includes(normalizedAnchor)) {
-      return text
-    }
-  }
+  if (findAnchorMatch(text, anchors)) return text
   const anchor = anchors[0]
   const suffix = text.endsWith(".") ? "" : "."
   return `${text}${suffix} That part about ${anchor} stands out.`
@@ -107,7 +91,11 @@ export async function POST(request: Request) {
       const start = content.indexOf("{")
       const end = content.lastIndexOf("}")
       if (start !== -1 && end !== -1) {
-        payload = JSON.parse(content.slice(start, end + 1))
+        try {
+          payload = JSON.parse(content.slice(start, end + 1))
+        } catch {
+          payload = undefined
+        }
       }
     }
 

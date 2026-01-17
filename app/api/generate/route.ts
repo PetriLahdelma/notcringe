@@ -4,11 +4,12 @@ import OpenAI from "openai"
 import { z } from "zod"
 
 import { prisma } from "@/lib/prisma"
+import { deriveLengthLabel, findAnchorMatch } from "@/lib/reply-utils"
 
 export const runtime = "nodejs"
 
 const RequestSchema = z.object({
-  postText: z.string().min(1).max(5000),
+  postText: z.string().trim().min(1).max(5000),
   vibe: z.enum(["diplomatic", "direct", "playful", "nerdy", "contrarian"]).optional(),
   risk: z.enum(["safe", "medium", "bold"]).optional(),
   length: z.enum(["one-liner", "two-three", "paragraph"]).optional(),
@@ -56,10 +57,30 @@ const defaults: Defaults = {
 }
 
 const CACHE_TTL_MS = 1000 * 60 * 10
+const CACHE_MAX_ENTRIES = 200
 const responseCache = new Map<
   string,
   { expiresAt: number; value: { anchors: string[]; replies: ReplyWithAnchor[]; model: string } }
 >()
+
+function pruneCache(extraEntries = 0) {
+  const now = Date.now()
+  for (const [key, entry] of responseCache) {
+    if (entry.expiresAt < now) {
+      responseCache.delete(key)
+    }
+  }
+
+  const maxSize = CACHE_MAX_ENTRIES - extraEntries
+  if (responseCache.size <= maxSize) return
+  const overflow = responseCache.size - maxSize
+  const keys = responseCache.keys()
+  for (let i = 0; i < overflow; i += 1) {
+    const key = keys.next().value
+    if (!key) break
+    responseCache.delete(key)
+  }
+}
 
 function getCachedResponse(cacheKey: string) {
   const entry = responseCache.get(cacheKey)
@@ -75,6 +96,7 @@ function setCachedResponse(
   cacheKey: string,
   value: { anchors: string[]; replies: ReplyWithAnchor[]; model: string }
 ) {
+  pruneCache(1)
   responseCache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, value })
 }
 
@@ -119,25 +141,15 @@ function extractAnchors(postText: string) {
     }
   }
 
+  if (!anchors.length) {
+    anchors.push("this post")
+  }
+
   return anchors
 }
 
-function normalizeForMatch(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
-}
-
-function findAnchorMatch(text: string, anchors: string[]) {
-  const normalizedText = normalizeForMatch(text)
-  for (const anchor of anchors) {
-    const normalizedAnchor = normalizeForMatch(anchor)
-    if (normalizedAnchor && normalizedText.includes(normalizedAnchor)) {
-      return anchor
-    }
-  }
-  return null
-}
-
-function enforceAnchors(replies: Reply[], anchors: string[]) {
+function enforceAnchors(replies: Reply[], anchors: string[]): ReplyWithAnchor[] {
+  if (anchors.length === 0) return replies
   return replies.map((reply, index) => {
     const match = findAnchorMatch(reply.text, anchors)
     if (match) {
@@ -151,13 +163,6 @@ function enforceAnchors(replies: Reply[], anchors: string[]) {
       anchor,
     }
   })
-}
-
-function deriveLengthLabel(text: string) {
-  const words = text.trim().split(/\s+/).filter(Boolean).length
-  if (words <= 12) return "short"
-  if (words <= 35) return "medium"
-  return "long"
 }
 
 function normalizeCategory(
@@ -312,7 +317,11 @@ export async function POST(request: Request) {
         const start = content.indexOf("{")
         const end = content.lastIndexOf("}")
         if (start !== -1 && end !== -1) {
-          payload = JSON.parse(content.slice(start, end + 1))
+          try {
+            payload = JSON.parse(content.slice(start, end + 1))
+          } catch {
+            payload = undefined
+          }
         }
       }
 

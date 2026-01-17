@@ -96,6 +96,8 @@ export function DemoGenerator() {
   const [feedbackSent, setFeedbackSent] = React.useState<Record<string, FeedbackType>>({})
   const [anonId, setAnonId] = React.useState<string | null>(null)
 
+  type GroupedReply = { reply: GeneratedReply; index: number }
+
   React.useEffect(() => {
     const key = "notcringe_anon_id"
     const stored =
@@ -116,11 +118,11 @@ export function DemoGenerator() {
 
   const groupedReplies = React.useMemo(() => {
     return replies.reduce(
-      (acc, reply) => {
-        acc[reply.category].push(reply)
+      (acc, reply, index) => {
+        acc[reply.category].push({ reply, index })
         return acc
       },
-      { SAFE: [] as GeneratedReply[], INTERESTING: [] as GeneratedReply[], BOLD: [] as GeneratedReply[] }
+      { SAFE: [] as GroupedReply[], INTERESTING: [] as GroupedReply[], BOLD: [] as GroupedReply[] }
     )
   }, [replies])
 
@@ -183,7 +185,8 @@ export function DemoGenerator() {
     action: "shorten" | "spice" | "safer"
   ) {
     if (!anchors.length) return
-    const actionKey = `${reply.id ?? index}-${action}`
+    const replyKey = reply.id ?? `reply-${index}`
+    const actionKey = `${replyKey}-${action}`
     setActionLoading((prev) => ({ ...prev, [actionKey]: true }))
     try {
       const response = await fetch("/api/rewrite", {
@@ -430,8 +433,9 @@ export function DemoGenerator() {
                   <span>{items.length}</span>
                 </div>
                 <div className="space-y-2">
-                  {items.map((reply, index) => {
-                    const actionBaseKey = `${reply.id ?? index}`
+                  {items.map(({ reply, index }) => {
+                    const replyKey = reply.id ?? `reply-${index}`
+                    const actionBaseKey = replyKey
                     const shortenKey = `${actionBaseKey}-shorten`
                     const spiceKey = `${actionBaseKey}-spice`
                     const saferKey = `${actionBaseKey}-safer`
@@ -439,8 +443,9 @@ export function DemoGenerator() {
 
                     return (
                       <div
-                        key={`${category}-${index}`}
+                        key={replyKey}
                         className="rounded-xl border border-emerald-500/10 bg-background/80 p-3 text-sm shadow-sm"
+                        data-reply-key={replyKey}
                       >
                         <div className="mb-2 flex items-center justify-between">
                           <Badge className={categoryBadge[reply.category]}>{reply.category}</Badge>
