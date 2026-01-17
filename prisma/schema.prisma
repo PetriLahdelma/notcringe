@@ -1,0 +1,122 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlanTier {
+  FREE
+  PRO
+  TEAM
+}
+
+enum FeedbackType {
+  WORKED
+  TOO_CRINGE
+  TOO_LONG
+}
+
+enum ReplyCategory {
+  SAFE
+  INTERESTING
+  BOLD
+}
+
+model Visitor {
+  id           String          @id @default(cuid())
+  anonId       String          @unique
+  createdAt    DateTime        @default(now())
+  lastSeenAt   DateTime?
+  planTier     PlanTier        @default(FREE)
+  defaultVibe  String?
+  defaultRisk  String?
+  noCringe     Boolean         @default(true)
+  voiceProfiles VoiceProfile[]
+  generations  Generation[]
+  savedPosts   SavedPost[]
+  feedback     FeedbackEvent[]
+
+  @@index([createdAt])
+}
+
+model VoiceProfile {
+  id             String   @id @default(cuid())
+  visitorId      String
+  name           String
+  doWords        String[]
+  dontWords      String[]
+  sentenceLength String?
+  emojiPolicy    String?
+  tabooTopics    String[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+
+  @@index([visitorId])
+}
+
+model Generation {
+  id         String   @id @default(cuid())
+  visitorId  String
+  settings   Json
+  model      String
+  latencyMs  Int
+  replyCount Int
+  createdAt  DateTime @default(now())
+
+  visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  replies Reply[]
+
+  @@index([visitorId, createdAt])
+}
+
+model Reply {
+  id            String         @id @default(cuid())
+  generationId  String
+  category      ReplyCategory
+  text          String         @db.Text
+  tags          String[]
+  score         Float
+  lengthLabel   String
+  createdAt     DateTime       @default(now())
+
+  generation Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)
+
+  @@index([generationId])
+}
+
+model SavedPost {
+  id         String   @id @default(cuid())
+  visitorId  String
+  postText   String?  @db.Text
+  postUrl    String?
+  author     String?
+  tags       String[]
+  createdAt  DateTime @default(now())
+  deletedAt  DateTime?
+
+  visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+
+  @@index([visitorId, createdAt])
+}
+
+model FeedbackEvent {
+  id           String       @id @default(cuid())
+  visitorId    String
+  generationId String?
+  replyId      String?
+  type         FeedbackType
+  createdAt    DateTime     @default(now())
+
+  visitor Visitor @relation(fields: [visitorId], references: [id], onDelete: Cascade)
+  generation Generation? @relation(fields: [generationId], references: [id], onDelete: SetNull)
+  reply      Reply?       @relation(fields: [replyId], references: [id], onDelete: SetNull)
+
+  @@index([visitorId, createdAt])
+  @@index([generationId])
+  @@index([replyId])
+}
