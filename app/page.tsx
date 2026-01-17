@@ -142,7 +142,7 @@ export default function Page() {
               </div>
               <CardTitle className="text-base font-semibold">Post excerpt</CardTitle>
               <p className="text-sm text-muted-foreground">
-                "Shipping fast is less about speed and more about removing hidden approval steps."
+                &quot;Shipping fast is less about speed and more about removing hidden approval steps.&quot;
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
