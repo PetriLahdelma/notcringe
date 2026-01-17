@@ -46,17 +46,28 @@ const labelMap = {
 type ReplyCategory = "SAFE" | "INTERESTING" | "BOLD"
 
 type GeneratedReply = {
+  id?: string
   category: ReplyCategory
   text: string
   tags: string[]
   lengthLabel: string
   score?: number
+  anchor?: string
 }
 
 type GenerateResponse = {
   replies: GeneratedReply[]
+  anchors?: string[]
+  generationId?: string | null
   latencyMs?: number
 }
+
+type RewriteResponse = {
+  text: string
+  lengthLabel?: string
+}
+
+type FeedbackType = "worked" | "too_cringe" | "too_long"
 
 const samplePost =
   "Shipping fast is less about speed and more about removing hidden approval steps. \n\nMost teams already have the talent. They just need fewer gates."
@@ -78,7 +89,30 @@ export function DemoGenerator() {
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [replies, setReplies] = React.useState<GeneratedReply[]>([])
+  const [anchors, setAnchors] = React.useState<string[]>([])
+  const [generationId, setGenerationId] = React.useState<string | null>(null)
   const [copiedIndex, setCopiedIndex] = React.useState<number | null>(null)
+  const [actionLoading, setActionLoading] = React.useState<Record<string, boolean>>({})
+  const [feedbackSent, setFeedbackSent] = React.useState<Record<string, FeedbackType>>({})
+  const [anonId, setAnonId] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    const key = "notcringe_anon_id"
+    const stored =
+      typeof window !== "undefined" ? window.localStorage.getItem(key) : null
+    if (stored) {
+      setAnonId(stored)
+      return
+    }
+    const generated =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `nc_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(key, generated)
+    }
+    setAnonId(generated)
+  }, [])
 
   const groupedReplies = React.useMemo(() => {
     return replies.reduce(
@@ -97,6 +131,9 @@ export function DemoGenerator() {
       return
     }
     setLoading(true)
+    setAnchors([])
+    setGenerationId(null)
+    setFeedbackSent({})
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
@@ -109,6 +146,7 @@ export function DemoGenerator() {
           cta,
           persona,
           noCringe,
+          anonId,
         }),
       })
 
@@ -119,6 +157,8 @@ export function DemoGenerator() {
 
       const data = (await response.json()) as GenerateResponse
       setReplies(data.replies || [])
+      setAnchors(data.anchors || [])
+      setGenerationId(data.generationId ?? null)
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong."
       setError(message)
@@ -134,6 +174,83 @@ export function DemoGenerator() {
       window.setTimeout(() => setCopiedIndex(null), 1500)
     } catch {
       setCopiedIndex(null)
+    }
+  }
+
+  async function handleRewrite(
+    reply: GeneratedReply,
+    index: number,
+    action: "shorten" | "spice" | "safer"
+  ) {
+    if (!anchors.length) return
+    const actionKey = `${reply.id ?? index}-${action}`
+    setActionLoading((prev) => ({ ...prev, [actionKey]: true }))
+    try {
+      const response = await fetch("/api/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: reply.text,
+          action,
+          anchors,
+          vibe,
+          risk,
+          length,
+          cta,
+          persona,
+          noCringe,
+        }),
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.error || "Rewrite failed. Try again.")
+      }
+
+      const data = (await response.json()) as RewriteResponse
+      setReplies((prev) =>
+        prev.map((item, idx) =>
+          idx === index
+            ? {
+                ...item,
+                text: data.text,
+                lengthLabel: data.lengthLabel ?? item.lengthLabel,
+              }
+            : item
+        )
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong."
+      setError(message)
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [actionKey]: false }))
+    }
+  }
+
+  async function handleFeedback(reply: GeneratedReply, type: FeedbackType) {
+    if (!anonId || !reply.id) return
+    if (feedbackSent[reply.id]) return
+    try {
+      const response = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          anonId,
+          generationId,
+          replyId: reply.id,
+          type,
+        }),
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new Error(payload?.error || "Feedback failed. Try again.")
+      }
+
+      setFeedbackSent((prev) => ({ ...prev, [reply.id!]: type }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong."
+      setError(message)
     }
   }
 
@@ -279,6 +396,20 @@ export function DemoGenerator() {
               </Badge>
             ) : null}
           </div>
+          {anchors.length ? (
+            <div className="rounded-xl border border-emerald-500/10 bg-muted/40 p-3">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+                Anchors
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {anchors.map((anchor) => (
+                  <Badge key={anchor} variant="outline" className="border-border/70 text-[10px]">
+                    {anchor}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {replies.length === 0 && !loading ? (
             <div className="rounded-xl border border-emerald-500/10 bg-muted/40 p-4 text-sm text-muted-foreground">
               Generate to see the ladder here.
@@ -291,50 +422,105 @@ export function DemoGenerator() {
               ))}
             </div>
           ) : null}
-          {Object.entries(groupedReplies).map(([category, items]) => (
-            <div key={category} className="space-y-2">
-              <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-muted-foreground">
-                <span>{category}</span>
-                <span>{items.length}</span>
-              </div>
-              <div className="space-y-2">
-                {items.map((reply, index) => (
-                  <div
-                    key={`${category}-${index}`}
-                    className="rounded-xl border border-emerald-500/10 bg-background/80 p-3 text-sm shadow-sm"
-                  >
-                    <div className="mb-2 flex items-center justify-between">
-                      <Badge className={categoryBadge[reply.category]}>{reply.category}</Badge>
-                      <span className="text-xs text-muted-foreground">{reply.lengthLabel}</span>
-                    </div>
-                    <p className="text-sm text-foreground">{reply.text}</p>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {reply.tags.map((tag) => (
-                        <Badge key={tag} variant="outline" className="border-border/70 text-[10px]">
-                          {tag}
-                        </Badge>
-                      ))}
-                    </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={() => handleCopy(reply.text, index)}
+          <div className="max-h-[520px] space-y-4 overflow-y-auto pr-1">
+            {Object.entries(groupedReplies).map(([category, items]) => (
+              <div key={category} className="space-y-2">
+                <div className="flex items-center justify-between text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                  <span>{category}</span>
+                  <span>{items.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {items.map((reply, index) => {
+                    const actionBaseKey = `${reply.id ?? index}`
+                    const shortenKey = `${actionBaseKey}-shorten`
+                    const spiceKey = `${actionBaseKey}-spice`
+                    const saferKey = `${actionBaseKey}-safer`
+                    const feedbackState = reply.id ? feedbackSent[reply.id] : undefined
+
+                    return (
+                      <div
+                        key={`${category}-${index}`}
+                        className="rounded-xl border border-emerald-500/10 bg-background/80 p-3 text-sm shadow-sm"
                       >
-                        {copiedIndex === index ? "Copied" : "Copy"}
-                      </Button>
-                      <Button size="xs" variant="ghost" disabled>
-                        Shorten
-                      </Button>
-                      <Button size="xs" variant="ghost" disabled>
-                        Spice up
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                        <div className="mb-2 flex items-center justify-between">
+                          <Badge className={categoryBadge[reply.category]}>{reply.category}</Badge>
+                          <span className="text-xs text-muted-foreground">{reply.lengthLabel}</span>
+                        </div>
+                        <p className="text-sm text-foreground">{reply.text}</p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {reply.tags.map((tag) => (
+                            <Badge key={tag} variant="outline" className="border-border/70 text-[10px]">
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            onClick={() => handleCopy(reply.text, index)}
+                          >
+                            {copiedIndex === index ? "Copied" : "Copy"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            disabled={!anchors.length || actionLoading[shortenKey]}
+                            onClick={() => handleRewrite(reply, index, "shorten")}
+                          >
+                            {actionLoading[shortenKey] ? "Shortening..." : "Shorten"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            disabled={!anchors.length || actionLoading[spiceKey]}
+                            onClick={() => handleRewrite(reply, index, "spice")}
+                          >
+                            {actionLoading[spiceKey] ? "Spicing..." : "Spice up"}
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            disabled={!anchors.length || actionLoading[saferKey]}
+                            onClick={() => handleRewrite(reply, index, "safer")}
+                          >
+                            {actionLoading[saferKey] ? "Softening..." : "Safer"}
+                          </Button>
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span className="uppercase tracking-[0.2em]">Feedback</span>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            disabled={!reply.id || feedbackState === "worked"}
+                            onClick={() => handleFeedback(reply, "worked")}
+                          >
+                            Worked
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            disabled={!reply.id || feedbackState === "too_cringe"}
+                            onClick={() => handleFeedback(reply, "too_cringe")}
+                          >
+                            Too cringe
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            disabled={!reply.id || feedbackState === "too_long"}
+                            onClick={() => handleFeedback(reply, "too_long")}
+                          >
+                            Too long
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </CardContent>
       <CardFooter className="border-t border-emerald-500/10">
